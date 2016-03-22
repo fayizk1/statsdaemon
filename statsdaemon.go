@@ -13,10 +13,12 @@ import (
 	"os/signal"
 	"runtime"
 	"sort"
+	"sync"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
+	"./subscriber"
 )
 
 const (
@@ -116,6 +118,7 @@ var (
 	timers          = make(map[string]Float64Slice)
 	countInactivity = make(map[string]int64)
 	sets            = make(map[string][]string)
+	Subscriber      []chan subscriber.SubscribeMessage
 )
 
 func monitor() {
@@ -257,10 +260,15 @@ func processCounters(buffer *bytes.Buffer, now int64) int64 {
 	var num int64
 	// continue sending zeros for counters for a short period of time even if we have no new data
 	for bucket, value := range counters {
+		tempSubMsg := subscriber.SubscribeMessage{Name : bucket, Type: "counter", Values : make(map[string]float64)}
+		tempSubMsg.Values["count"] = value
 		fmt.Fprintf(buffer, "%s %s %d\n", bucket, strconv.FormatFloat(value, 'f', -1, 64), now)
 		delete(counters, bucket)
 		countInactivity[bucket] = 0
 		num++
+		for _, out := range Subscriber{
+			out <-tempSubMsg
+		}
 	}
 	for bucket, purgeCount := range countInactivity {
 		if purgeCount > 0 {
@@ -286,18 +294,25 @@ func processGauges(buffer *bytes.Buffer, now int64) int64 {
 		if gauge != math.MaxFloat64 {
 			hasChanged = true
 		}
-
+		tempSubMsg := subscriber.SubscribeMessage{Name : bucket, Type: "gauge", Values : make(map[string]float64)}
 		switch {
 		case hasChanged:
+			tempSubMsg.Values["gauge"] = currentValue
 			fmt.Fprintf(buffer, "%s %s %d\n", bucket, strconv.FormatFloat(currentValue, 'f', -1, 64), now)
 			lastGaugeValue[bucket] = currentValue
 			gauges[bucket] = math.MaxFloat64
 			num++
 		case hasLastValue && !hasChanged && !*deleteGauges:
+			tempSubMsg.Values["gauge"] = currentValue
 			fmt.Fprintf(buffer, "%s %s %d\n", bucket, strconv.FormatFloat(lastValue, 'f', -1, 64), now)
 			num++
 		default:
 			continue
+		}
+		if _, ok  :=tempSubMsg.Values["gauge"]; ok {
+			for _, out := range Subscriber {
+				out <-tempSubMsg
+			}
 		}
 	}
 	return num
@@ -329,7 +344,8 @@ func processTimers(buffer *bytes.Buffer, now int64, pctls Percentiles) int64 {
 		max := timer[len(timer)-1]
 		maxAtThreshold := max
 		count := len(timer)
-
+		tempSubMsg := subscriber.SubscribeMessage{Name : bucket, Type: "timer", Values : make(map[string]float64)}
+		
 		sum := float64(0)
 		for _, value := range timer {
 			sum += value
@@ -355,26 +371,36 @@ func processTimers(buffer *bytes.Buffer, now int64, pctls Percentiles) int64 {
 
 			var tmpl string
 			var pctstr string
+			var tname string
 			if pct.float >= 0 {
 				tmpl = "%s.upper_%s%s %s %d\n"
+				tname = fmt.Sprintf("upper_%s", pct.str)
 				pctstr = pct.str
 			} else {
 				tmpl = "%s.lower_%s%s %s %d\n"
+				tname = fmt.Sprintf("lower_%s", pct.str[1:])
 				pctstr = pct.str[1:]
 			}
 			threshold_s := strconv.FormatFloat(maxAtThreshold, 'f', -1, 64)
 			fmt.Fprintf(buffer, tmpl, bucketWithoutPostfix, pctstr, *postfix, threshold_s, now)
+			tempSubMsg.Values[tname] = maxAtThreshold
 		}
 
 		mean_s := strconv.FormatFloat(mean, 'f', -1, 64)
 		max_s := strconv.FormatFloat(max, 'f', -1, 64)
 		min_s := strconv.FormatFloat(min, 'f', -1, 64)
-
+		tempSubMsg.Values["mean"] = mean
+		tempSubMsg.Values["upper"] = max   
+		tempSubMsg.Values["lower"] = min
+		tempSubMsg.Values["count"] = float64(count)
 		fmt.Fprintf(buffer, "%s.mean%s %s %d\n", bucketWithoutPostfix, *postfix, mean_s, now)
 		fmt.Fprintf(buffer, "%s.upper%s %s %d\n", bucketWithoutPostfix, *postfix, max_s, now)
 		fmt.Fprintf(buffer, "%s.lower%s %s %d\n", bucketWithoutPostfix, *postfix, min_s, now)
 		fmt.Fprintf(buffer, "%s.count%s %d %d\n", bucketWithoutPostfix, *postfix, count, now)
 
+		for _, out := range Subscriber {
+			out <-tempSubMsg
+		}
 		delete(timers, bucket)
 	}
 	return num
@@ -614,8 +640,7 @@ func tcpListener() {
 }
 
 func main() {
-	flag.Parse()
-
+	flag.Parse()	
 	if *showVersion {
 		fmt.Printf("statsdaemon v%s (built w/%s)\n", VERSION, runtime.Version())
 		return
@@ -628,5 +653,11 @@ func main() {
 	if *tcpServiceAddress != "" {
 		go tcpListener()
 	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	h1 := subscriber.NewSubscriber(1 * time.Hour, wg, ":2005", *postfix)
+	Subscriber = append(Subscriber, h1.In)
+	m1 := subscriber.NewSubscriber(1 * time.Minute, wg, ":2005", *postfix)
+	Subscriber = append(Subscriber, m1.In)
 	monitor()
 }
