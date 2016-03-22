@@ -189,7 +189,7 @@ func packetHandler(s *Packet) {
 		if !ok {
 			counters[s.Bucket] = 0
 		}
-		counters[s.Bucket] += float64(s.Value.(int64)) * float64(1/s.Sampling)
+		counters[s.Bucket] += float64(s.Value.(float64)) * float64(1/s.Sampling)
 	case "s":
 		_, ok := sets[s.Bucket]
 		if !ok {
@@ -657,7 +657,7 @@ func main() {
 	wg.Add(2)
 	h1 := subscriber.NewSubscriber(1 * time.Hour, wg, ":2005", *postfix)
 	Subscriber = append(Subscriber, h1.In)
-	m1 := subscriber.NewSubscriber(1 * time.Minute, wg, ":2005", *postfix)
+	m1 := subscriber.NewSubscriber(1 * time.Minute, wg, ":2004", *postfix)
 	Subscriber = append(Subscriber, m1.In)
 	monitor()
 }
