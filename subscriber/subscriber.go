@@ -18,12 +18,17 @@ type SubscribeMessage struct {
 	Values map[string]float64
 }
 
+type timerTempl struct {
+	HitCount int64
+	Values map[string]float64
+}
+
 type Subscriber struct {
 	In chan SubscribeMessage
 	stopCh chan struct{}
 	graphiteAddress string
 	interval time.Duration
-	timers map[string]map[string]float64
+	timers map[string]*timerTempl
 	gauges map[string]float64
 	counters  map[string]float64
 	countInactivity map[string]float64
@@ -37,6 +42,10 @@ func ticker(d time.Duration) chan bool {
 		minute := int(d.Minutes())
 		for {
 			time.Sleep(1 * time.Minute)
+			nowMin := time.Now().Minute()
+			if nowMin == 0 {
+				nowMin = 60
+			}
 			if time.Now().Minute() > minute {
 				if (time.Now().Minute() % minute) != 0 {
 					continue
@@ -53,13 +62,13 @@ func ticker(d time.Duration) chan bool {
 }
 
 func NewSubscriber(Interval time.Duration, wg sync.WaitGroup, graphiteAddress string, postfix string) *Subscriber {
-	timers := make(map[string]map[string]float64)
+	timers := make(map[string]*timerTempl)
 	gauges := make(map[string]float64)
 	counters := make(map[string]float64)
 	countInactivity := make(map[string]float64)
 	In := make(chan SubscribeMessage, 1000)
 	stopCh := make(chan struct{})
-	return &Subscriber{In: In, countInactivity: countInactivity, counters: counters, wg: wg, gauges: gauges, timers: timers, interval: Interval, stopCh : stopCh}
+	return &Subscriber{In: In, countInactivity: countInactivity, counters: counters, wg: wg, gauges: gauges, timers: timers, interval: Interval, stopCh : stopCh, graphiteAddress: graphiteAddress}
 }
 
 func (s *Subscriber) Monitor() {
@@ -81,39 +90,38 @@ func (s *Subscriber) processPkt(message SubscribeMessage) {
 	switch message.Type {
 	case "timer":
 		if _, ok := s.timers[message.Name]; !ok {
-			s.timers[message.Name] = make(map[string]float64)
+			s.timers[message.Name] = &timerTempl{HitCount : 1, Values : make(map[string]float64)}
 			for k, v := range message.Values {
-				s.timers[message.Name][k] = v
+				s.timers[message.Name].Values[k] = v
 			}
 		} else {
+			s.timers[message.Name].HitCount += 1
 			for k, v := range message.Values {
 				switch k {
 				case "upper":
-					if s.timers[message.Name]["upper"] < v {
-						s.timers[message.Name]["upper"] = v
+					if s.timers[message.Name].Values["upper"] < v {
+						s.timers[message.Name].Values["upper"] = v
 					}
 				case "lower":
-					if s.timers[message.Name]["lower"] > v {
-						s.timers[message.Name]["lower"] = v
+					if s.timers[message.Name].Values["lower"] > v {
+						s.timers[message.Name].Values["lower"] = v
 					}
 				case "count":
-					if s.timers[message.Name]["mean"] < math.MaxFloat64 {
-						s.timers[message.Name]["count"] = s.timers[message.Name]["count"]+v
-					}
+						s.timers[message.Name].Values["count"] = s.timers[message.Name].Values["count"]+v
 				case "mean":
-					if s.timers[message.Name]["mean"] > (math.MaxFloat64 - v) {
-						s.timers[message.Name]["mean"] = math.MaxFloat64
+					if s.timers[message.Name].Values["mean"] > (math.MaxFloat64 - v) {
+						s.timers[message.Name].Values["mean"] = math.MaxFloat64
 					} else {
-						s.timers[message.Name]["mean"] = s.timers[message.Name]["mean"]+v
+						s.timers[message.Name].Values["mean"] = s.timers[message.Name].Values["mean"]+v
 					}
 				default:
 					if strings.Contains(k , ".upper_") {
-						if s.timers[message.Name][k] < v {
-							s.timers[message.Name][k] = v
+						if s.timers[message.Name].Values[k] < v {
+							s.timers[message.Name].Values[k] = v
 						}
 					} else if strings.Contains(k , ".lower_") {
-						if s.timers[message.Name][k] > v {
-							s.timers[message.Name][k] = v
+						if s.timers[message.Name].Values[k] > v {
+							s.timers[message.Name].Values[k] = v
 						}
 					} else {
 						log.Println("Subscriber: warn: timer unknown subtype", k)
@@ -132,13 +140,9 @@ func (s *Subscriber) submit(sync bool) {
 	var buffer bytes.Buffer
 	now := time.Now().Unix()
 	for k,v := range s.timers {
-		count := s.timers[k]["count"]
-		for t, tv := range v {
-			if t == "mean" {
-				fmt.Fprintf(&buffer, "%s.%s%s %s %d\n", k, t,s.postfix, strconv.FormatFloat(tv/count, 'f', -1, 64), now)
-			} else {
-				fmt.Fprintf(&buffer, "%s.%s%s %s %d\n", k, t,s.postfix, strconv.FormatFloat(tv, 'f', -1, 64), now)
-			}
+		s.timers[k].Values["mean"] = s.timers[k].Values["mean"] / float64(s.timers[k].HitCount)
+		for t, tv := range v.Values {
+			fmt.Fprintf(&buffer, "%s.%s%s %s %d\n", k, t,s.postfix, strconv.FormatFloat(tv, 'f', -1, 64), now)
 		}
 		delete(s.timers, k)
 	}
