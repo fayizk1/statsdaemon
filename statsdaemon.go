@@ -667,5 +667,7 @@ func main() {
 	Subscriber = append(Subscriber, h1.In)
 	m1 := subscriber.NewSubscriber(1 * time.Minute, wg, ":2004", *postfix)
 	Subscriber = append(Subscriber, m1.In)
+	go h1.Monitor()
+	go m1.Monitor()
 	monitor()
 }
