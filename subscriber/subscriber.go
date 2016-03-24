@@ -38,22 +38,16 @@ type Subscriber struct {
 
 func ticker(d time.Duration) chan bool {
 	tick := make(chan bool)
+	iMinute := int(d.Minutes())
 	go func() {
-		minute := int(d.Minutes())
 		for {
 			time.Sleep(1 * time.Minute)
 			nowMin := time.Now().Minute()
 			if nowMin == 0 {
 				nowMin = 60
 			}
-			if time.Now().Minute() > minute {
-				if (time.Now().Minute() % minute) != 0 {
-					continue
-				}
-			} else {
-				if (minute % time.Now().Minute()) != 0 {
-					continue
-				}
+			if (nowMin % iMinute) != 0 {
+				continue
 			}
 			tick <- true
 		}
