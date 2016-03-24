@@ -101,7 +101,10 @@ var (
 	persistCountKeys  = flag.Int64("persist-count-keys", 60, "number of flush-intervals to persist count keys")
 	receiveCounter    = flag.String("receive-counter", "", "Metric name for total metrics received per interval")
 	percentThreshold  = Percentiles{}
-	prefix            = flag.String("prefix", "", "Prefix for all stats")
+	prefixtimer       = flag.String("prefixt", "stats.timers.", "Prefix for timers")
+	prefixgauge       = flag.String("prefixg", "stats.gauges.", "Prefix for gauges")
+	prefixset         = flag.String("prefixs", "stats.sets.", "Prefix for all sets")
+	prefixcounter       = flag.String("prefixc", "stats_counts.", "Prefix for all counters")
 	postfix           = flag.String("postfix", "", "Postfix for all stats")
 )
 
@@ -532,6 +535,7 @@ func parseLine(line []byte) *Packet {
 	var (
 		err   error
 		value interface{}
+		prefix string
 	)
 
 	switch typeCode {
@@ -541,6 +545,7 @@ func parseLine(line []byte) *Packet {
 			log.Printf("ERROR: failed to ParseInt %s - %s", string(val), err)
 			return nil
 		}
+		prefix = *prefixcounter
 	case "g":
 		var rel, neg bool
 		var s string
@@ -567,21 +572,24 @@ func parseLine(line []byte) *Packet {
 		}
 
 		value = GaugeData{rel, neg, value.(float64)}
+		prefix = *prefixgauge
 	case "s":
 		value = string(val)
+		prefix = *prefixset
 	case "ms":
 		value, err = strconv.ParseFloat(string(val), 64)
 		if err != nil {
 			log.Printf("ERROR: failed to ParseFloat %s - %s", string(val), err)
 			return nil
 		}
+		prefix = *prefixtimer
 	default:
 		log.Printf("ERROR: unrecognized type code %q", typeCode)
 		return nil
 	}
 
 	return &Packet{
-		Bucket:   sanitizeBucket(*prefix + string(name) + *postfix),
+		Bucket:   sanitizeBucket(prefix + string(name) + *postfix),
 		Value:    value,
 		Modifier: typeCode,
 		Sampling: sampling,
